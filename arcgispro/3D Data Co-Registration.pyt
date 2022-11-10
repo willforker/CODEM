@@ -1,9 +1,28 @@
 import os
 import json
 import arcpy
-import subprocess
+from subprocess import Popen, PIPE, STDOUT
+
+# p = Popen("conda info", shell=True, stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+# output = p.stdout.readlines()
+# active_env_path = output[2]
+# active_env_path_location = active_env_path[25:]
+# active_env_path_location_decode = active_env_path_location.decode("utf-8")
+# first_path = active_env_path_location_decode + "/bin"
+# second_path = active_env_path_location_decode + "/Lib/site-packages/bin"
+# os.environ["PDAL_DRIVER_PATH"] = f"{first_path};{second_path}"
+
+import logging
+from rich.console import Console
 import pdal
 import codem
+from codem.lib.log import Log
+import vcd
+from vcd.meshing.mesh import Mesh
+from vcd.preprocessing.preprocess import PointCloud
+from vcd.preprocessing.preprocess import VCD
+from vcd.preprocessing.preprocess import VCDParameters
+from vcd.main import VcdRunConfig
 import dataclasses
 import math
 import numpy as np
@@ -12,16 +31,17 @@ class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the
         .pyt file)."""
-        self.label = "3D Data Co-Registration"
+        self.label = "3D Data Co-Registration (NEGGS)"
         self.alias = "3d_registration"
 
         # List of tool classes associated with this toolbox
-        self.tools = [Register_MultiType]
+        self.tools = [Register_MultiType, Volumetric_Change_Detection]
 
 class Register_MultiType(object):
+
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
-        self.label = "Register Multi-Type"
+        self.label = "Register Multi-Type (CODEM)"
         self.description = "Co-Register 3D Spatial Data"
         self.canRunInBackground = False
 
@@ -462,6 +482,136 @@ class Register_MultiType(object):
                 "Consider converting AOI or visualizing in other software."
             )
         else:
+            if aoi_file_extension == '.tif':
+                arcpy.management.CalculateStatistics(reg_file, 1, 1, [], "OVERWRITE", r"in_memory\feature_set1")
+                arcpy.AddMessage(f"Raster Statistics calculated for {reg_file}")
             activeMap.addDataFromPath(reg_file)
             arcpy.AddMessage(f"ActiveMap added {aoi_file_extension} file")
+            
+
         return None
+
+
+class Volumetric_Change_Detection(object):
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Volumetric Change Detection"
+        self.description = "Developed by Brad Chambers and Howard Butler"
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        """Define parameter definitions"""
+        
+        before = arcpy.Parameter(
+            displayName="Before LiDAR Scan",
+            name="before",
+            datatype=["DEFile","DELasDataset","GPLasDatasetLayer"],
+            parameterType="Required",
+            direction="Input",
+        )
+
+        after = arcpy.Parameter(
+            displayName="After LiDAR Scan",
+            name="after",
+            datatype=["DEFile","DELasDataset","GPLasDatasetLayer"],
+            parameterType="Required",
+            direction="Input",
+            
+        )
+        spacing = arcpy.Parameter(
+            displayName="Spacing Override",
+            name="spacing",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input",
+            category="Optional Parameters"
+        )
+
+        ground_height = arcpy.Parameter(
+            displayName="Ground Height",
+            name="groundheight",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input",
+            category="Optional Parameters"
+        )
+
+        resolution = arcpy.Parameter(
+            displayName="Resolution",
+            name="resolution",
+            datatype="GPDouble",
+            parameterType="Optional",
+            direction="Input",
+            category="Optional Parameters"
+        )
+
+        verbose = arcpy.Parameter(
+            displayName="Verbose",
+            name="verbose",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input",
+            category="Optional Parameters"
+
+        )
+        
+        params = [before,after,spacing,ground_height,resolution,verbose]
+        return params
+
+    def isLicensed(self):
+        """Set whether tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter.  This method is called after internal validation."""
+        return
+
+    def getLayerPath(self, layer):
+            if not os.path.exists(layer):
+            # we are working with an ArcGIS scene layer and not a file:
+                desc = arcpy.Describe(layer)
+                layer = os.path.join(desc.path, layer)
+            return layer
+
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+
+        before_full_path = os.fsdecode(f"{self.getLayerPath(parameters[0].valueAsText)}").replace(os.sep, "/")
+        after_full_path = os.fsdecode(f"{self.getLayerPath(parameters[1].valueAsText)}").replace(os.sep, "/")
+        
+        before_file_extension = os.path.splitext(before_full_path)[-1]
+        after_file_extension = os.path.splitext(after_full_path)[-1]
+
+        kwargs = {
+            parameter.name.upper(): parameter.value for parameter in parameters[2:]
+        }
+        #log = logging.Logger
+        #kwargs['log'] = log
+        vcd_run_config = VcdRunConfig(before_full_path, after_full_path, **kwargs)
+        config = dataclasses.asdict(vcd_run_config)
+        #config['log']=log
+        # config: VCDParameters
+        # logger: logging.Logger
+        # console: Console
+        before = PointCloud(config, "BEFORE")
+        after = PointCloud(config, "AFTER")
+        v = VCD(before,after)
+        v.compute_indexes()
+        v.make_products()
+        v.cluster()
+        v.rasterize()
+        m = Mesh(v)
+        m.write("non-ground", m.cluster(v.ng_clusters))
+        m.write("ground", m.cluster(v.ground_clusters))
+        v.save()
+
+
+        return
