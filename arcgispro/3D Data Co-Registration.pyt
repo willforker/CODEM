@@ -174,6 +174,13 @@ class Register_MultiType(object):
             direction="Input",
             category="ICP Registration Options",
         )
+        output = arcpy.Parameter(
+            displayName="Registered File",
+            name="output_file",
+            datatype=["DEFile","DELasDataset","GPLasDatasetLayer","GPRasterLayer"],
+            parameterType="Derived",
+            direction="Output",
+        )
 
         # Minimum pipeline resolution
         min.value = 1.0
@@ -245,6 +252,7 @@ class Register_MultiType(object):
             idt,  # 13
             irt,  # 14
             ir,  # 15
+            output # 16
         ]
         return params
 
@@ -332,46 +340,48 @@ class Register_MultiType(object):
                         )
 
         #check that correct input 3D data types are being used ("las", "laz", "bpf", "ply", "obj", "tif", "tiff")
-        acceptable_data_list = [".las", ".laz", ".bpf", ".ply", ".obj", ".tif", ".tiff"]
+        acceptable_data_list = ["las", "laz", "bpf", "ply", "obj", "tif", "tiff"]
         if parameters[0].value:
-            fnd_full_path = os.fsdecode(f"{self.getLayerPath(parameters[0].valueAsText)}").replace(os.sep, "/")
-            
-            fnd_file_split = os.path.split(fnd_full_path)
-            fnd_file_extension = ""
-            fnd_file_base = os.path.splitext(fnd_file_split[0])
-            fnd_file_tail = os.path.splitext(fnd_file_split[1])
 
             #getting the proper file extension, accounting for case where raster band appears as the last item in file path, such as C:/my/path/file.tif/band_1
-            if fnd_file_base[-1] is not "":
-                fnd_file_extension = fnd_file_base[-1]
-            else:
-                fnd_file_extension = fnd_file_tail[-1]
+            #also accounts for when layer title does not end with file extension
+            if self.getFileExtension(parameters[0].valueAsText) not in acceptable_data_list:
+                fnd_full_path = os.fsdecode(f"{self.getLayerPath(parameters[0].valueAsText)}").replace(os.sep, "/")
+                fnd_file_split = os.path.split(fnd_full_path)
+                if self.getFileExtension(fnd_file_split[0]) not in acceptable_data_list:
+                    parameters[0].setErrorMessage(
+                        "File not able to be coregistered."
+                        f" Acceptable file types are {acceptable_data_list}"
+                        f" This file is a {self.getFileExtension(fnd_file_split[0])}"
+                    )
 
-            if fnd_file_extension not in acceptable_data_list:
+            #check that data is projected, as data with only a GCS won't work
+            spatial_ref = arcpy.Describe(parameters[0]).spatialReference
+            if spatial_ref.type == "Geographic":
                 parameters[0].setErrorMessage(
-                    "File not able to be coregistered."
-                    f" Acceptable file types are {acceptable_data_list}"
+                    "This dataset cannot be successfully coregistered as it is not projected. Please project and try again."
                 )
-
+            
                 
         if parameters[1].value:
-            aoi_full_path = os.fsdecode(f"{self.getLayerPath(parameters[1].valueAsText)}").replace(os.sep, "/")
-            
-            aoi_file_split = os.path.split(aoi_full_path)
-            aoi_file_extension = ""
-            aoi_file_base = os.path.splitext(aoi_file_split[0])
-            aoi_file_tail = os.path.splitext(aoi_file_split[1])
 
             #getting the proper file extension, accounting for case where raster band appears as the last item in file path, such as C:/my/path/file.tif/band_1
-            if aoi_file_base[-1] is not "":
-                aoi_file_extension = aoi_file_base[-1]
-            else:
-                aoi_file_extension = aoi_file_tail[-1]
+            #also accounts for when layer title does not end with file extensio
+            if self.getFileExtension(parameters[1].valueAsText) not in acceptable_data_list:
+                aoi_full_path = os.fsdecode(f"{self.getLayerPath(parameters[1].valueAsText)}").replace(os.sep, "/")
+                aoi_file_split = os.path.split(aoi_full_path)
+                if self.getFileExtension(aoi_file_split[1]) not in acceptable_data_list:
+                    parameters[1].setErrorMessage(
+                        "File not able to be coregistered."
+                        f" Acceptable file types are {acceptable_data_list}"
+                        f" This file is a {self.getFileExtension(aoi_file_split[1])}"
+                    )
 
-            if aoi_file_extension not in acceptable_data_list:
-                parameters[0].setErrorMessage(
-                    "File not able to be coregistered."
-                    f" Acceptable file types are {acceptable_data_list}"
+            #check that data is projected, as data with only a GCS won't work
+            spatial_ref = arcpy.Describe(parameters[1]).spatialReference
+            if spatial_ref.type == "Geographic":
+                parameters[1].setErrorMessage(
+                    "This dataset cannot be successfully coregistered as it is not projected. Please project and try again."
                 )
 
         return
@@ -382,6 +392,10 @@ class Register_MultiType(object):
             desc = arcpy.Describe(layer)
             layer = os.path.join(desc.path, layer)
         return layer
+
+    def getFileExtension(self, layer):
+        desc = arcpy.Describe(layer)
+        return desc.extension
 
     def execute(self, parameters, messages):
         """The source code of the tool."""
@@ -404,7 +418,7 @@ class Register_MultiType(object):
         arcpy.SetProgressor("step", "Registering AOI to Foundation", 0, 5)
 
         kwargs = {
-            parameter.name.upper(): parameter.value for parameter in parameters[2:]
+            parameter.name.upper(): parameter.value for parameter in parameters[2:15]
         }
         codem_run_config = codem.CodemRunConfig(fnd_full_path, aoi_full_path, **kwargs)
         config = dataclasses.asdict(codem_run_config)
@@ -488,7 +502,8 @@ class Register_MultiType(object):
             fnd_obj, aoi_obj, icp_reg, config, output_format=mapping[aoi_file_extension].lstrip(".")
         )
         arcpy.AddMessage(f"Registration has been applied to AOI-DSM and saved to: {reg_file}")
-
+        parameters[16] = reg_file
+        arcpy.AddMessage(parameters[16])
         if not os.path.exists(reg_file):
             arcpy.AddError(f"Registration file '{reg_file}' not generated")
             return None
@@ -588,6 +603,20 @@ class Volumetric_Change_Detection(object):
             direction="Input",
             category="Optional Parameters"
         )
+        grnd_output = arcpy.Parameter(
+            displayName="Change Detection Mesh (Ground)",
+            name="output_file_grnd",
+            datatype=["DEFile","DELasDataset","GPLasDatasetLayer","GPRasterLayer"],
+            parameterType="Derived",
+            direction="Output",
+        )
+        nongrnd_output = arcpy.Parameter(
+            displayName="Change Detection Mesh (Non-Ground)",
+            name="output_file_nongrnd",
+            datatype="DEShapefile",
+            parameterType="Derived",
+            direction="Output",
+        )
 
         spacing.value = 0.43
         ground_height.value = 1.0
@@ -595,15 +624,13 @@ class Volumetric_Change_Detection(object):
         min_points.value = 30.0
         cluster_tolerance.value = 2.0
 
-        #            0     1      2         3            4         5        6              7             
-        params = [before,after,spacing,ground_height,resolution,verbose,min_points,cluster_tolerance]
+        #            0     1      2         3            4         5        6              7           8              9
+        params = [before,after,spacing,ground_height,resolution,verbose,min_points,cluster_tolerance,grnd_output,nongrnd_output]
 
         spacing.value = 0.43
         ground_height.value = 1.0
         resolution.value = 1.0
 
-
-        params = [before,after,spacing,ground_height,resolution,verbose]
         return params
 
     def isLicensed(self):
@@ -638,7 +665,7 @@ class Volumetric_Change_Detection(object):
 
 
         kwargs = {
-            parameter.name.upper(): parameter.value for parameter in parameters[2:]
+            parameter.name.upper(): parameter.value for parameter in parameters[2:7]
         }
 
         vcd_run_config = vcd.VcdRunConfig(before_full_path, after_full_path, **kwargs)
@@ -688,7 +715,8 @@ class Volumetric_Change_Detection(object):
         arcpy.AddMessage(vcd_run_config.OUTPUT_DIR)
         ground_file = os.path.join(vcd_run_config.OUTPUT_DIR,"meshes","ground.shp")
         nonground_file = os.path.join(vcd_run_config.OUTPUT_DIR,"meshes","non-ground.shp")
-
+        parameters[8]=ground_file
+        parameters[9]=nonground_file
 
         if not os.path.exists(ground_file):
             arcpy.AddError(f"Ground file '{ground_file}' not generated")
