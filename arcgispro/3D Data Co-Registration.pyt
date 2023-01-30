@@ -1,26 +1,25 @@
 import os
 import json
-import arcpy
 import subprocess
+
+conda_json = json.loads(
+    subprocess.run(
+        ["conda", "info", "--json"], capture_output=True
+    ).stdout
+)
+CONDA_PREFIX = conda_json["env_vars"]["CONDA_PREFIX"]
+
+# set environment variables
+os.environ["PATH"] = f"{os.environ['PATH']};{os.path.join(CONDA_PREFIX, 'bin')}"
+os.environ["PDAL_DRIVER_PATH"] = os.path.join(CONDA_PREFIX, 'Library', 'bin')
+os.environ["GDAL_DRIVER_PATH"] = os.path.join(CONDA_PREFIX, 'Library', 'bin', 'gdalplugins')
+os.environ["PROJ_NETWORK"] = "ON"
+os.environ["PROJ_LIB"] = os.path.join(CONDA_PREFIX, 'Library', 'share', 'proj')
+os.environ["GDAL_DATA"] = os.path.join(CONDA_PREFIX, 'Library', 'share', 'gdal')
+import arcpy
 import dataclasses
 import math
 import numpy as np
-
-# please forgive me for what I am about to do...
-# arcgis does not activate conda environments see
-# https://community.esri.com/t5/arcgis-api-for-python-questions/conda-activate-scripts-are-not-executed-within/td-p/1230529
-try:
-    import pdal
-except json.decoder.JSONDecodeError:
-    conda_json = json.loads(
-        subprocess.run(
-            ["conda", "info", "--json"], capture_output=True
-        ).stdout
-    )
-    CONDA_PREFIX = conda_json["env_vars"]["CONDA_PREFIX"]
-    os.environ["PDAL_DRIVER_PATH"] = os.path.join(CONDA_PREFIX, "bin")
-    import pdal
-
 import codem
 import vcd
 
@@ -177,7 +176,7 @@ class Register_MultiType(object):
         output = arcpy.Parameter(
             displayName="Registered File",
             name="output_file",
-            datatype=["DEFile","DELasDataset","GPLasDatasetLayer","GPRasterLayer"],
+            datatype="DELasDataset",
             parameterType="Derived",
             direction="Output",
         )
